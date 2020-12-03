@@ -1,19 +1,5 @@
 #!/bin/bash
-echo " .----------------.  .----------------.  .----------------."
-echo "| .--------------. || .--------------. || .--------------. |"
-echo "| |  _________   | || |     ______   | || | ____    ____ | |"
-echo "| | |_   ___  |  | || |   .' ___  |  | || ||_   \  /   _|| |"
-echo "| |   | |_  \_|  | || |  / .'   \_|  | || |  |   \/   |  | |"
-echo "| |   |  _|  _   | || |  | |         | || |  | |\  /| |  | |"
-echo "| |  _| |___/ |  | || |  \  .___.'\  | || | _| |_\/_| |_ | |"
-echo "| | |_________|  | || |    ._____.'  | || ||_____||_____|| |"
-echo "| |              | || |              | || |              | |"
-echo "| '--------------' || '--------------' || '--------------' |"
-echo " '----------------'  '----------------'  '----------------'"
-
-echo "-------> Installer v0.01            "
-echo "----> Installing ECM v0.01 slave   "
-echo "-> You have 10 seconds to cancel.   "
+echo "You have 10 seconds to cancel.   "
 echo " "
 
 if [ ! -e "/etc/centos-release" ]; then
@@ -28,14 +14,7 @@ chmod 777 /etc/ecm/seedit2.conf
 wget "https://raw.githubusercontent.com/illnesse/seedit4.me_tools_public/master/ecm-iptables-script" -O /etc/ecm/ecm-iptables-init-script
 wget "https://raw.githubusercontent.com/illnesse/seedit4.me_tools_public/master/init-wildcard-ssl" -O /etc/ecm/init-wildcard-ssl
 chmod +x /etc/ecm/init-wildcard-ssl
-echo "-> Installing packages"
-yum update
-yum install -y git expr bc &> /dev/null
-echo "-> Downloading ECM files..."
-cd /tmp && git clone https://github.com/illnesse/seedit4.me_tools_public
-mv /tmp/seedit4.me_tools_public /tmp/slave
-chmod 700 /tmp/slave/*
-mv /tmp/slave/* /sbin
+
 echo "-> Installing OpenVZ kernel"
 wget -P /etc/yum.repos.d/ https://download.openvz.org/openvz.repo
 rpm --import http://download.openvz.org/RPM-GPG-Key-OpenVZ
@@ -67,7 +46,7 @@ yum -y install epel-release
 yum -y install nginx
 echo "-> Install Lets Encrypt"
 yum -y install epel-release mod_ssl
-rpm -ivh https://rhel6.iuscommunity.org/ius-release.rpm
+rpm -ivh https://dl.iuscommunity.org/pub/ius/stable/CentOS/6/x86_64/ius-release-2-1.el6.ius.noarch.rpm
 yum --enablerepo=ius install git python27 python27-devel python27-pip python27- setuptools python27-virtualenv -y
 cd /etc/ecm
 git clone https://github.com/letsencrypt/letsencrypt
@@ -78,7 +57,7 @@ ipset create publictrackers hash:net
 iptables -I FORWARD -m set --match-set publictrackers dst -j DROP
 echo -e "$newPassword\n$newPassword" | passwd remote
 echo 'Downloading container template'
-wget https://earnest.ams3.digitaloceanspaces.com/seed/templates/ubuntu-16.04-x86_64-swizzin.tar.gz -O /var/lib/vz/template/cache/ubuntu-16.04-x86_64-swizzin.tar.gz
+wget https://my.seedit4.me/storage/drop/ubuntu-16.04-x86_64-swizzin04.tar.gz -O /var/lib/vz/template/cache/ubuntu-16.04-x86_64-swizzin04.tar.gz
 yum -y install cairo-devel libxml2-devel pango-devel pango libpng-devel freetype freetype-devel libart_lgpl-devel
 yum -y install rrdtool-perl
 mkdir /opt/bandwidth
