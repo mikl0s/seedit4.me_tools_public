@@ -25,15 +25,15 @@ sleep 10
 mkdir /etc/ecm
 touch /etc/ecm/seedit2.conf
 chmod 777 /etc/ecm/seedit2.conf
-wget "https://raw.githubusercontent.com/madeinearnest/container-manager/master/ecm-iptables-script" -O /etc/ecm/ecm-iptables-init-script
-wget "https://raw.githubusercontent.com/madeinearnest/container-manager/master/init-wildcard-ssl" -O /etc/ecm/init-wildcard-ssl
+wget "https://raw.githubusercontent.com/illnesse/seedit4.me_tools_public/master/ecm-iptables-script" -O /etc/ecm/ecm-iptables-init-script
+wget "https://raw.githubusercontent.com/illnesse/seedit4.me_tools_public/master/init-wildcard-ssl" -O /etc/ecm/init-wildcard-ssl
 chmod +x /etc/ecm/init-wildcard-ssl
 echo "-> Installing packages"
 yum update
 yum install -y git expr bc &> /dev/null
 echo "-> Downloading ECM files..."
-cd /tmp && git clone https://github.com/madeinearnest/container-manager
-mv /tmp/container-manager /tmp/slave
+cd /tmp && git clone https://github.com/illnesse/seedit4.me_tools_public
+mv /tmp/seedit4.me_tools_public /tmp/slave
 chmod 700 /tmp/slave/*
 mv /tmp/slave/* /sbin
 echo "-> Installing OpenVZ kernel"
