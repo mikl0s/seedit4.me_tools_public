@@ -5,8 +5,8 @@
 
 [centos-sclo-sclo]
 name=CentOS-6 - SCLo sclo
-# baseurl=http://mirror.centos.org/centos/6/sclo/$basearch/sclo/
-#irrorlist=http://mirrorlist.centos.org?arch=$basearch&release=6&repo=sclo-sclo
+#baseurl=http://mirror.centos.org/centos/6/sclo/$basearch/sclo/
+#mirrorlist=http://mirrorlist.centos.org?arch=$basearch&release=6&repo=sclo-sclo
 baseurl=http://vault.centos.org/centos/6/sclo/$basearch/sclo/
 gpgcheck=1
 enabled=1

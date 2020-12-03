@@ -51,15 +51,14 @@ yum --enablerepo=ius install git python27 python27-devel python27-pip python27- 
 cd /etc/ecm
 git clone https://github.com/letsencrypt/letsencrypt
 /etc/init.d/nginx start
-echo "-> Configuring IP Block"
-yum -y install ipset
-ipset create publictrackers hash:net
-iptables -I FORWARD -m set --match-set publictrackers dst -j DROP
+#echo "-> Configuring IP Block"
+#yum -y install ipset
+#ipset create publictrackers hash:net
+#iptables -I FORWARD -m set --match-set publictrackers dst -j DROP
 echo -e "$newPassword\n$newPassword" | passwd remote
 echo 'Downloading container template'
 wget https://my.seedit4.me/storage/drop/ubuntu-16.04-x86_64-swizzin04.tar.gz -O /var/lib/vz/template/cache/ubuntu-16.04-x86_64-swizzin04.tar.gz
-yum -y install cairo-devel libxml2-devel pango-devel pango libpng-devel freetype freetype-devel libart_lgpl-devel
-yum -y install rrdtool-perl
+yum -y install cairo-devel libxml2-devel pango-devel pango libpng-devel freetype freetype-devel libart_lgpl-devel rrdtool-perl ipset
 mkdir /opt/bandwidth
 mkdir /opt/bandwidth/images
 curl -o /opt/bandwidth/getTraffic.pl https://my.seedit4.me/storage/scripts/server/getTraffic.pl
