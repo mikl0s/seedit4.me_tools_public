@@ -1,0 +1,537 @@
+. /etc/os-release
+## disable enterprise proxmox repo
+if [ -f /etc/apt/sources.list.d/pve-enterprise.list ]; then
+  echo -e "#deb https://enterprise.proxmox.com/debian $VERSION_CODENAME pve-enterprise\\n" > /etc/apt/sources.list.d/pve-enterprise.list
+fi
+## enable public proxmox repo
+if [ ! -f /etc/apt/sources.list.d/proxmox.list ] && [ ! -f /etc/apt/sources.list.d/pve-public-repo.list ] && [ ! -f /etc/apt/sources.list.d/pve-install-repo.list ] ; then
+  echo -e "deb http://download.proxmox.com/debian $VERSION_CODENAME pve-no-subscription\\n" > /etc/apt/sources.list.d/pve-public-repo.list
+fi
+## Add non-free to sources
+sed -i "s/main contrib/main non-free contrib/g" /etc/apt/sources.list
+
+apt update
+
+apt -y upgrade
+
+apt -y install htop rsync screen git mtr-tiny whois omping tmux sshpass wget axel nano pigz net-tools htop iptraf iotop iftop iperf vim vim-nox unzip zip software-properties-common aptitude curl dos2unix dialog mlocate build-essential git ipset parted fail2ban
+
+# DNS configuration
+EMAIL="robchapman81@googlemail.com"
+KEY="ede53572a0cfd13b3ae4656e88a9151d312d2"
+ZONE_ID="77f54667e58013908189f288ed0a2a9a"
+TYPE="A"
+CONTENT=`dig +short myip.opendns.com @resolver1.opendns.com`
+PROXIED="false"
+TTL="1";
+curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/" -H "X-Auth-Email: $EMAIL" -H "X-Auth-Key: $KEY" -H "Content-Type: application/json" --data '{"type":"'"$TYPE"'","name":"'"$HOSTNAME"'","content":"'"$CONTENT"'","proxied":'"$PROXIED"',"ttl":'"$TTL"'}' | python3 -m json.tool
+curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/" -H "X-Auth-Email: $EMAIL" -H "X-Auth-Key: $KEY" -H "Content-Type: application/json" --data '{"type":"'"$TYPE"'","name":"'"*.$HOSTNAME"'","content":"'"$CONTENT"'","proxied":'"$PROXIED"',"ttl":'"$TTL"'}' | python3 -m json.tool
+
+systemctl disable rpcbind
+systemctl stop rpcbind
+
+## Set pigz to replace gzip, 2x faster gzip compression
+cat  <<EOF > /bin/pigzwrapper
+#!/bin/sh
+PATH=/bin:\$PATH
+GZIP="-1"
+exec /usr/bin/pigz "\$@"
+EOF
+mv -f /bin/gzip /bin/gzip.original
+cp -f /bin/pigzwrapper /bin/gzip
+chmod +x /bin/pigzwrapper
+chmod +x /bin/gzip
+
+cat <<EOF > /etc/fail2ban/filter.d/proxmox.conf
+[Definition]
+failregex = pvedaemon\[.*authentication failure; rhost=<HOST> user=.* msg=.*
+ignoreregex =
+EOF
+cat <<EOF > /etc/fail2ban/jail.d/proxmox.conf
+[proxmox]
+enabled = true
+port = https,http,8006
+filter = proxmox
+logpath = /var/log/daemon.log
+maxretry = 3
+# 1 hour
+bantime = 3600
+EOF
+cat <<EOF > /etc/fail2ban/jail.local
+[DEFAULT]
+banaction = iptables-ipset-proto4
+EOF
+systemctl enable fail2ban
+
+sed -i "s/#bwlimit:.*/bwlimit: 0/" /etc/vzdump.conf
+sed -i "s/#pigz:.*/pigz: 1/" /etc/vzdump.conf
+sed -i "s/#ionice:.*/ionice: 5/" /etc/vzdump.conf
+
+echo "vm.min_free_kbytes = 524288" >> /etc/sysctl.conf
+sysctl -p
+
+## Remove subscription banner
+if [ -f "/usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js" ] ; then
+  sed -i "s/data.status !== 'Active'/false/g" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+  # create a daily cron to make sure the banner does not re-appear
+  cat <<'EOF' > /etc/cron.daily/proxmox-nosub
+#!/bin/sh
+# eXtremeSHOK.com Remove subscription banner
+sed -i "s/data.status !== 'Active'/false/g" /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js
+EOF
+  chmod 755 /etc/cron.daily/proxmox-nosub
+fi
+
+for i in `dmesg|grep TB|awk '{ print $5 }'|sort|cut -c2-4|grep -v sda|grep -v sdb`; do sfdisk --delete /dev/$i; done
+sfdisk --delete /dev/nvme0n1
+printf 'n\n\n\n+16G\n\nw\ny\n' | gdisk /dev/nvme0n1
+printf 'n\n\n\n\n\nw\ny\n' | gdisk /dev/nvme0n1
+partprobe
+zpool create -f tank /dev/sdc /dev/sdd /dev/sde /dev/sdf /dev/sdg /dev/sdh /dev/sdi /dev/sdj /dev/sdk /dev/sdl  -o ashift=12
+zpool add -f tank log /dev/nvme0n1p1
+zpool add -f tank cache /dev/nvme0n1p2
+zfs create -o mountpoint=/lxc -o compression=on tank/lxc
+zfs create -o mountpoint=/userdata -o compression=on tank/userdata
+
+## Increase max user watches
+# BUG FIX : No space left on device
+echo 1048576 > /proc/sys/fs/inotify/max_user_watches
+echo "fs.inotify.max_user_watches=1048576" >> /etc/sysctl.conf
+sysctl -p /etc/sysctl.conf
+
+## Increase max FD limit / ulimit
+cat <<EOF >> /etc/security/limits.conf
+# eXtremeSHOK.com Increase max FD limit / ulimit
+* soft     nproc          256000
+* hard     nproc          256000
+* soft     nofile         256000
+* hard     nofile         256000
+root soft     nproc          256000
+root hard     nproc          256000
+root soft     nofile         256000
+root hard     nofile         256000
+EOF
+
+## Enable TCP BBR congestion control
+cat <<EOF > /etc/sysctl.d/10-kernel-bbr.conf
+# eXtremeSHOK.com
+# TCP BBR congestion control
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+
+## Increase kernel max Key limit
+cat <<EOF > /etc/sysctl.d/60-maxkeys.conf
+# eXtremeSHOK.com
+# Increase kernel max Key limit
+kernel.keys.root_maxkeys=1000000
+kernel.keys.maxkeys=1000000
+EOF
+
+## Set systemd ulimits
+echo "DefaultLimitNOFILE=256000" >> /etc/systemd/system.conf
+echo "DefaultLimitNOFILE=256000" >> /etc/systemd/user.conf
+echo 'session required pam_limits.so' | tee -a /etc/pam.d/common-session-noninteractive
+echo 'session required pam_limits.so' | tee -a /etc/pam.d/common-session
+echo 'session required pam_limits.so' | tee -a /etc/pam.d/runuser-l
+
+## Set ulimit for the shell user
+cd ~ && echo "ulimit -n 256000" >> .bashrc ; echo "ulimit -n 256000" >> .profile
+
+## Optimise ZFS arc size
+if [ "$(command -v zfs)" != "" ] ; then
+  RAM_SIZE_GB=$(( $(vmstat -s | grep -i "total memory" | xargs | cut -d" " -f 1) / 1024 / 1000))
+  if [[ RAM_SIZE_GB -lt 16 ]] ; then
+    # 1GB/1GB
+    MY_ZFS_ARC_MIN=1073741824
+    MY_ZFS_ARC_MAX=1073741824
+  else
+    MY_ZFS_ARC_MIN=$((RAM_SIZE_GB * 1073741824 / 16))
+    MY_ZFS_ARC_MAX=$((RAM_SIZE_GB * 1073741824 / 8))
+  fi
+  # Enforce the minimum, incase of a faulty vmstat
+  if [[ MY_ZFS_ARC_MIN -lt 1073741824 ]] ; then
+    MY_ZFS_ARC_MIN=1073741824
+  fi
+  if [[ MY_ZFS_ARC_MAX -lt 1073741824 ]] ; then
+    MY_ZFS_ARC_MAX=1073741824
+  fi
+  cat <<EOF > /etc/modprobe.d/zfs.conf
+# Use 1/16 RAM for MAX cache, 1/8 RAM for MIN cache, or 1GB
+options zfs zfs_arc_min=$MY_ZFS_ARC_MIN
+options zfs zfs_arc_max=$MY_ZFS_ARC_MAX
+# use the prefetch method
+options zfs l2arc_noprefetch=0
+# max write speed to l2arc
+# tradeoff between write/read and durability of ssd (?)
+# default : 8 * 1024 * 1024
+# setting here : 500 * 1024 * 1024
+options zfs l2arc_write_max=524288000
+EOF
+fi
+
+cat <<EOF > /etc/sysctl.d/100-speedup.conf
+# Maximum receive socket buffer size
+net.core.rmem_max = 134217728
+
+# Maximum send socket buffer size
+net.core.wmem_max = 134217728
+
+# Minimum, initial and max TCP Receive buffer size in Bytes
+net.ipv4.tcp_rmem = 4096 87380 134217728
+
+# Minimum, initial and max buffer space allocated
+net.ipv4.tcp_wmem = 4096 65536 134217728
+
+# Maximum number of packets queued on the input side
+net.core.netdev_max_backlog = 300000
+
+# Auto tuning
+net.ipv4.tcp_moderate_rcvbuf =1
+
+# Don't cache ssthresh from previous connection
+net.ipv4.tcp_no_metrics_save = 1
+
+# The Hamilton TCP (HighSpeed-TCP) algorithm is a packet loss based congestion control and is more aggressive pushing up to max bandwidth (total BDP) and favors hosts with lower TTL / VARTTL.
+net.ipv4.tcp_congestion_control=htcp
+
+net.bridge.bridge-nf-call-iptables=0
+net.bridge.bridge-nf-call-arptables=0
+net.bridge.bridge-nf-call-ip6tables=0
+EOF
+
+# propagate the setting into the kernel
+update-initramfs -u -k all
+
+
+
+
+# nginx setup ----------------------------------------------------------------------------------------------------------
+
+
+
+
+apt -y install sudo nginx certbot python-certbot-nginx python3-certbot-dns-cloudflare
+
+# Nginx and SSL configuration
+rm -f /etc/nginx/sites-enabled/default
+cat << 'EOF' | sed "s/XXX/$HOSTNAME/g" > /etc/nginx/sites-available/seedit
+server {
+  listen   80 default_server;
+  listen   [::]:80 default_server;
+  server_name ~^(.*)\.XXX.seedit4.me$;
+
+  gzip on;
+  gzip_vary on;
+  gzip_min_length 1000;
+  gzip_proxied any;
+  gzip_types text/plain text/css text/xml application/xml text/javascript application/x-javascript image/svg+xml;
+  gzip_disable "MSIE [1-6]\.";
+
+  client_max_body_size 100M;
+
+  proxy_set_header Sec-WebSocket-Extensions $http_sec_websocket_extensions;
+  proxy_set_header Sec-WebSocket-Key $http_sec_websocket_key;
+  proxy_set_header Sec-WebSocket-Version $http_sec_websocket_version;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "Upgrade";
+  proxy_redirect off;
+  proxy_buffering off;
+
+  location / {
+  	#return 200 $1;
+  	proxy_pass https://10.0.0.$1:443;
+  	proxy_set_header Host $host;
+  	proxy_set_header X-Real-IP $remote_addr;
+  	proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  	proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location /wyg8dsgiusdboud9ug {
+  	alias /opt/bandwidth;
+  }
+
+  error_page 504 /502;
+  error_page 502 /502;
+  error_page 502 /502;
+  error_page 501 /502;
+  error_page 500 /502;
+  location /502{
+  	proxy_pass https://dev.seedit4.me/502;
+  }
+
+  error_page 401 /401;
+  error_page 402 /401;
+  error_page 403 /401;
+  location /401{
+  	proxy_pass https://dev.seedit4.me/401;
+  }
+
+  error_page 404 /404;
+  location /404{
+  	proxy_pass https://dev.seedit4.me/404;
+  }
+}
+EOF
+ln -s /etc/nginx/sites-available/seedit /etc/nginx/sites-enabled/
+mkdir -p /root/.secrets/certbot/
+echo "# Cloudflare API credentials used by Certbot" > /root/.secrets/certbot/cloudflare.ini
+echo "dns_cloudflare_email = robchapman81@googlemail.com" >> /root/.secrets/certbot/cloudflare.ini
+echo "dns_cloudflare_api_key = ede53572a0cfd13b3ae4656e88a9151d312d2" >> /root/.secrets/certbot/cloudflare.ini
+chmod 600 /root/.secrets/certbot/cloudflare.ini
+certbot run -i nginx --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/certbot/cloudflare.ini --dns-cloudflare-propagation-seconds 10 --email certificates@seedit4.me --non-interactive --agree-tos --redirect -d $HOSTNAME.seedit4.me -d *.$HOSTNAME.seedit4.me
+cat << 'EOF' | sed "s/XXX/$HOSTNAME/g" > /etc/nginx/sites-available/seedit
+server {
+  server_name ~^(.*)\.XXX.seedit4.me$;
+
+  gzip on;
+  gzip_vary on;
+  gzip_min_length 1000;
+  gzip_proxied any;
+  gzip_types text/plain text/css text/xml application/xml text/javascript application/x-javascript image/svg+xml;
+  gzip_disable "MSIE [1-6]\.";
+
+  client_max_body_size 100M;
+
+  proxy_set_header Sec-WebSocket-Extensions $http_sec_websocket_extensions;
+  proxy_set_header Sec-WebSocket-Key $http_sec_websocket_key;
+  proxy_set_header Sec-WebSocket-Version $http_sec_websocket_version;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "Upgrade";
+  proxy_redirect off;
+  proxy_buffering off;
+
+  location / {
+        #return 200 $1;
+        proxy_pass https://10.0.0.$1:443;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+  }
+
+  location /wyg8dsgiusdboud9ug {
+        alias /opt/bandwidth;
+  }
+
+  error_page 504 /502;
+  error_page 502 /502;
+  error_page 502 /502;
+  error_page 501 /502;
+  error_page 500 /502;
+  location /502{
+        proxy_pass https://dev.seedit4.me/502;
+  }
+
+  error_page 401 /401;
+  error_page 402 /401;
+  error_page 403 /401;
+  location /401{
+        proxy_pass https://dev.seedit4.me/401;
+  }
+
+  error_page 404 /404;
+  location /404{
+        proxy_pass https://dev.seedit4.me/404;
+  }
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/XXX.seedit4.me/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/XXX.seedit4.me/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+}
+
+server {
+    if ($host ~ ^[^.]+\.XXX\.seedit4\.me$) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    if ($host = XXX.seedit4.me) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+  listen   80 default_server;
+  listen   [::]:80 default_server;
+  server_name XXX.seedit4.me *.XXX.seedit4.me;
+    return 404; # managed by Certbot
+}
+EOF
+service nginx restart
+cat << 'EOF' > /etc/cron.monthly/certbot.sh
+#!/bin/bash
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin"
+certbot renew -n --post-hook "systemctl reload nginx"
+EOF
+chmod +x /etc/cron.monthly/certbot.sh
+
+
+
+# zabbix setup ---------------------------------------------------------------------------------------------------------
+i=$(/usr/bin/sudo ip route | grep default | sed -e "s/^.*dev.//" -e "s/.proto.*//" | awk '{print $1;}');
+wget https://repo.zabbix.com/zabbix/4.4/debian/pool/main/z/zabbix-release/zabbix-release_4.4-1+buster_all.deb
+dpkg -i zabbix-release_4.4-1+buster_all.deb
+
+apt update
+apt -y install vnstat bc zabbix-agent
+vnstat -u -i $i
+sed -i -E "s/Interface .*/Interface \"$i\"/"  /etc/vnstat.conf
+service vnstat restart
+
+mkdir /etc/zabbix/zabbix_agentd.conf.d/
+mv /etc/zabbix/zabbix_agentd.conf /etc/zabbix/zabbix_agentd.conf.org
+echo "PidFile=/var/run/zabbix/zabbix_agentd.pid" > /etc/zabbix/zabbix_agentd.conf
+echo "LogFile=/var/log/zabbix/zabbix_agentd.log" >> /etc/zabbix/zabbix_agentd.conf
+echo "LogFileSize=0" >> /etc/zabbix/zabbix_agentd.conf
+echo "Server=127.0.0.1,49.12.66.34" >> /etc/zabbix/zabbix_agentd.conf
+echo "Hostname=$HOSTNAME" >> /etc/zabbix/zabbix_agentd.conf
+echo "ServerActive=127.0.0.1" >> /etc/zabbix/zabbix_agentd.conf
+echo "LoadModulePath=/etc/zabbix/" >> /etc/zabbix/zabbix_agentd.conf
+#echo "LoadModule=zabbix_module_docker.so" >> /etc/zabbix/zabbix_agentd.conf
+echo "Include=/etc/zabbix/zabbix_agentd.conf.d/*.conf" >> /etc/zabbix/zabbix_agentd.conf
+
+cat > /usr/local/bin/zabbix_up_month_bandwidth.sh <<LID
+#!/bin/bash
+    i=\$(vnstat --oneline | awk -F\; '{ print \$10 }')
+
+    bandwidth_number=\$(echo \$i | awk '{ print \$1 }')
+    bandwidth_unit=\$(echo \$i | awk '{ print \$2 }')
+
+    case "\$bandwidth_unit" in
+    KiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number/1024" | bc)
+        ;;
+    MiB)    bandwidth_number_MB=\$bandwidth_number
+        ;;
+    GiB)     bandwidth_number_MB=\$(echo "\$bandwidth_number*1024" | bc)
+        ;;
+    TiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number*1024*1024" | bc)
+        ;;
+    esac
+
+    echo \$bandwidth_number_MB
+LID
+
+cat > /usr/local/bin/zabbix_down_month_bandwidth.sh <<LID
+#!/bin/bash
+    i=\$(vnstat --oneline | awk -F\; '{ print \$9 }')
+
+    bandwidth_number=\$(echo \$i | awk '{ print \$1 }')
+    bandwidth_unit=\$(echo \$i | awk '{ print \$2 }')
+
+    case "\$bandwidth_unit" in
+    KiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number/1024" | bc)
+        ;;
+    MiB)    bandwidth_number_MB=\$bandwidth_number
+        ;;
+    GiB)     bandwidth_number_MB=\$(echo "\$bandwidth_number*1024" | bc)
+        ;;
+    TiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number*1024*1024" | bc)
+        ;;
+    esac
+
+    echo \$bandwidth_number_MB
+LID
+
+cat > /usr/local/bin/zabbix_total_month_bandwidth.sh <<LID
+#!/bin/bash
+    i=\$(vnstat --oneline | awk -F\; '{ print \$11 }')
+
+    bandwidth_number=\$(echo \$i | awk '{ print \$1 }')
+    bandwidth_unit=\$(echo \$i | awk '{ print \$2 }')
+
+    case "\$bandwidth_unit" in
+    KiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number/1024" | bc)
+        ;;
+        ;;
+    GiB)     bandwidth_number_MB=\$(echo "\$bandwidth_number*1024" | bc)
+        ;;
+    TiB)    bandwidth_number_MB=\$(echo "\$bandwidth_number*1024*1024" | bc)
+        ;;
+    esac
+
+    echo \$bandwidth_number_MB
+LID
+
+chmod +x /usr/local/bin/zabbix_up_month_bandwidth.sh
+chmod +x /usr/local/bin/zabbix_down_month_bandwidth.sh
+chmod +x /usr/local/bin/zabbix_total_month_bandwidth.sh
+
+cat > /etc/zabbix/zabbix_agentd.conf.d/userparameter_monthly.traffic.up.conf <<LID
+#monthly data plan
+UserParameter=system.monthlybandwidth.up, /usr/local/bin/zabbix_up_month_bandwidth.sh
+LID
+
+cat > /etc/zabbix/zabbix_agentd.conf.d/userparameter_monthly.traffic.down.conf <<LID
+#monthly data plan
+UserParameter=system.monthlybandwidth.down, /usr/local/bin/zabbix_down_month_bandwidth.sh
+LID
+
+cat > /etc/zabbix/zabbix_agentd.conf.d/userparameter_monthly.traffic.conf <<LID
+#monthly data plan
+UserParameter=system.monthlybandwidth, /usr/local/bin/zabbix_total_month_bandwidth.sh
+LID
+
+#systemctl restart zabbix-agent
+systemctl enable zabbix-agent
+systemctl restart zabbix-agent
+
+#enable loadavg for containers (cpu%)
+sed -i "s/ExecStart=.*/ExecStart=\/usr\/bin\/lxcfs -l \/var\/lib\/lxcfs/g" /lib/systemd/system/lxcfs.service
+
+#download templates
+cd /var/lib/vz/template/cache/
+wget http://seedit4.me/drop/userdata-template.zfs
+wget http://seedit4.me/drop/ubuntu-18.04-standard_18.04.1-1_amd64_seedit03.tar.gz
+
+cat > /root/.bashrc <<BASHRC
+export LS_OPTIONS='--color=auto'
+alias ls='ls $LS_OPTIONS'
+alias ll='ls $LS_OPTIONS -l'
+alias l='ls $LS_OPTIONS -lA'
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+ulimit -n 256000
+BASHRC
+
+echo -e "\n\n\n\n"
+
+# Remote user setup
+useradd -m remote
+newPassword=$(openssl rand -base64 32)
+echo -e "$newPassword\n$newPassword" | passwd remote
+echo 'remote ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+chown -R remote:remote /home/remote
+echo "NODE ACCESS KEY: $newPassword"
+
+
+cp /root/.bashrc /home/remote/
+
+# End message
+echo "WE ARE DONE HERE, PLEASE COPY THE ACCESS KEY AND REBOOT!"
+
+
+iptables -A INPUT -p tcp --dport 22 --source 78.46.76.232 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 95.217.195.31 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 104.26.5.23 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 80.240.26.23 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 159.203.161.246 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 159.203.163.240 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 --source 94.130.203.209 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 22 -j DROP
+
+iptables -A INPUT -p tcp --dport 8006 --source 78.46.76.232 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 95.217.195.31 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 104.26.5.23 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 80.240.26.23 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 159.203.161.246 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 159.203.163.240 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 94.130.203.209 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 85.204.136.3 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 --source 85.204.121.232 -j ACCEPT;
+iptables -A INPUT -p tcp --dport 8006 -j DROP
